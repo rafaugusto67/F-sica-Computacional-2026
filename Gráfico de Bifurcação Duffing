@@ -1,0 +1,99 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+import time
+import multiprocessing as mp
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# 1. Equações do Pêndulo-Duffing
+def duffing_pendulum_equations(t, state, a, b, alpha, d1, d2, f, mu):
+    x, dx, gamma, dgamma = state
+    denom = 1.0 - a * np.sin(gamma)**2
+    num_x = (f * np.cos(mu * t) - x - alpha * (x**3) - d1 * dx
+             - a * b * np.sin(gamma)**2
+             - a * b * d2 * dgamma * np.sin(gamma)
+             + a * b * (dgamma**2) * np.cos(gamma))
+    ddx = num_x / denom
+    ddgamma = (ddx * np.sin(gamma) / b) - np.sin(gamma) - d2 * dgamma
+    return [dx, ddx, dgamma, ddgamma]
+
+# 2. Função Auxiliar para Processamento Paralelo
+def simular_forca(args):
+    f_atual, a, b, alpha, d1, d2, mu, t_span, t_eval, state_init = args
+    
+    # Tolerância levemente mais estrita (1e-4) para evitar falsos positivos de caos
+    sol = solve_ivp(duffing_pendulum_equations, t_span, state_init,
+                    args=(a, b, alpha, d1, d2, f_atual, mu),
+                    t_eval=t_eval, method='RK45', rtol=1e-4, atol=1e-4)
+    
+    return f_atual, sol.y[0]
+
+if __name__ == '__main__':
+    # Parâmetros base
+    a, b, alpha, d1, d2, mu = 0.091, 3.33, 0.031, 0.132, 0.02, 1.26
+
+    # AMOSTRAGEM 
+    resolucao_f = 1000
+    f_vals = np.linspace(1.0, 1.5, resolucao_f)
+
+    # Configurações de Tempo e Transiente
+    periodo_forca = 2 * np.pi / mu
+    ciclos_transientes = 80
+    ciclos_captura = 60
+
+    t_max = (ciclos_transientes + ciclos_captura) * periodo_forca
+    t_span = (0, t_max)
+    t_eval = np.array([i * periodo_forca for i in range(ciclos_transientes, ciclos_transientes + ciclos_captura)])
+
+    state_init = [0.1, 0.0, 0.1, 0.0]
+
+    # Preparação da simulação
+    num_cores = max(1, mp.cpu_count() - 1)
+    print(f"Iniciando cálculo de ALTA RESOLUÇÃO do Diagrama de Bifurcação ({resolucao_f} valores)...")
+    print(f"Distribuindo processamento em {num_cores} núcleos...")
+
+    tarefas = [(f, a, b, alpha, d1, d2, mu, t_span, t_eval, state_init) for f in f_vals]
+
+    f_plot = []
+    x_plot = []
+
+    start_time = time.time()
+
+    # 3. Execução Paralela
+    with mp.Pool(processes=num_cores) as pool:
+        for i, (f_atual, x_poincare) in enumerate(pool.imap_unordered(simular_forca, tarefas)):
+            # Usa o método extend (muito mais veloz que loop com append)
+            f_plot.extend([f_atual] * len(x_poincare))
+            x_plot.extend(x_poincare)
+
+            # Feedback de progresso
+            if (i + 1) % 50 == 0 or (i + 1) == resolucao_f:
+                elapsed = time.time() - start_time
+                restante = (elapsed / (i + 1)) * (resolucao_f - (i + 1))
+                print(f"Progresso: {i + 1}/{resolucao_f}... (Tempo estimado restante: {restante/60:.1f} min)")
+
+    print(f"Cálculos concluídos em {(time.time() - start_time)/60:.1f} min! Gerando o diagrama...")
+
+    # 4. Plotagem de Alta Densidade
+    plt.figure(figsize=(14, 8), dpi=300)
+    plt.style.use('dark_background')
+
+    # Marcadores super finos (s=0.1) para não saturar o gráfico com os 60 mil pontos
+    plt.scatter(f_plot, x_plot, s=0.1, alpha=0.3, color='cyan', edgecolors='none')
+
+    plt.title('Diagrama de Bifurcação do Pêndulo-Duffing\n(Alta Resolução: 1000 Amostras)', 
+              fontsize=14, fontweight='bold', pad=15)
+    plt.xlabel('Amplitude da Força Externa ($f$)', fontsize=12)
+    plt.ylabel('Posição do Bloco ($x$) na Secção de Poincaré', fontsize=12)
+
+    plt.grid(True, linestyle='-', alpha=0.1)
+
+    plt.axvline(x=1.25, color='red', linestyle='--', linewidth=1, alpha=0.7)
+    plt.text(1.252, plt.ylim()[1]*0.9, 'Caos Severo\n($f = 1.25$)', color='red', fontsize=10)
+
+    # Backup da renderização em alta qualidade
+    plt.savefig("diagrama_bifurcacao_1000.png", bbox_inches='tight')
+    
+    plt.show()
