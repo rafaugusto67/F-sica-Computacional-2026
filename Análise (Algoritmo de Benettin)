@@ -1,0 +1,243 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from scipy.fft import fft, fftfreq
+from scipy.stats import linregress
+from scipy.spatial.distance import pdist
+import time
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ====================================================================
+# 1. EQUAÇÕES DIFERENCIAIS DO PÊNDULO-DUFFING ACORDA (4D)
+# ====================================================================
+def duffing_pendulum_equations(t, state, a, b, alpha, d1, d2, f, mu):
+    x, dx, gamma, dgamma = state
+    denom = 1.0 - a * np.sin(gamma)**2
+    num_x = (f * np.cos(mu * t) - x - alpha * (x**3) - d1 * dx
+             - a * b * np.sin(gamma)**2
+             - a * b * d2 * dgamma * np.sin(gamma)
+             + a * b * (dgamma**2) * np.cos(gamma))
+    ddx = num_x / denom
+    ddgamma = (ddx * np.sin(gamma) / b) - np.sin(gamma) - d2 * dgamma
+    return [dx, ddx, dgamma, ddgamma]
+
+# ====================================================================
+# 2. MOTORES MATEMÁTICOS (Lyapunov e Dimensão Fractal)
+# ====================================================================
+def get_numeric_jacobian(func, t, state, args, eps=1e-5):
+    J = np.zeros((4, 4))
+    f0 = np.array(func(t, state, *args))
+    for i in range(4):
+        state_eps = np.array(state, dtype=float).copy()
+        state_eps[i] += eps
+        f_eps = np.array(func(t, state_eps, *args))
+        J[:, i] = (f_eps - f0) / eps
+    return J
+
+# Algoritmo de Benettin
+def lyapunov_expoente(a, b, alpha, d1, d2, f, mu, t_max=150):
+    """
+    Cálculo Rigoroso do Expoente de Lyapunov via Algoritmo de Benettin
+    (Integração do Sistema Aumentado + Ortogonalização de Gram-Schmidt)
+    """
+    dt_ortho = 0.5  # Intervalo de tempo para aplicar Gram-Schmidt
+    steps = int(t_max / dt_ortho)
+    args = (a, b, alpha, d1, d2, f, mu)
+    
+    y0 = np.array([0.1, 0.0, 1.5, 0.0])
+    U = np.eye(4)  # Matriz identidade para perturbações iniciais
+    soma_lyap = np.zeros(4)
+    
+    # Sistema Aumentado: 4 equações originais + 16 equações variacionais
+    def augmented_system(t, Y):
+        state = Y[:4]
+        Phi = Y[4:].reshape((4, 4))
+        
+        # Derivadas do sistema base
+        d_state = np.array(duffing_pendulum_equations(t, state, *args))
+        
+        # Matriz Jacobiana local
+        J = get_numeric_jacobian(duffing_pendulum_equations, t, state, args)
+        
+        # Evolução das perturbações no espaço tangente (dPhi/dt = J * Phi)
+        d_Phi = J @ Phi
+        
+        return np.concatenate((d_state, d_Phi.flatten()))
+
+    Y_current = np.concatenate((y0, U.flatten()))
+    t_current = 0.0
+    
+    for step in range(steps):
+        t_span = (t_current, t_current + dt_ortho)
+        
+        sol = solve_ivp(augmented_system, t_span, Y_current, method='RK45', rtol=1e-5, atol=1e-5)
+        
+        # Extração do estado final e da nova matriz de perturbação
+        Y_next = sol.y[:, -1]
+        state_next = Y_next[:4]
+        Phi_next = Y_next[4:].reshape((4, 4))
+        
+        # Ortogonalização de Gram-Schmidt
+        for j in range(4):
+            for k in range(j):
+                proj = np.dot(Phi_next[:, j], U[:, k])
+                Phi_next[:, j] -= proj * U[:, k]
+            
+            norm = np.linalg.norm(Phi_next[:, j])
+            
+            if norm > 0:
+                soma_lyap[j] += np.log(norm)
+                U[:, j] = Phi_next[:, j] / norm
+            else:
+                U[:, j] = Phi_next[:, j]
+        
+        # Prepara vetores para o próximo passo de tempo
+        Y_current = np.concatenate((state_next, U.flatten()))
+        t_current += dt_ortho
+        
+    return soma_lyap[0] / t_max
+
+def dimensao_correlacao(x, amostras=800):
+    # Usamos o espaço de fase atrasado (Phase-Space Reconstruction) para o bloco X
+    if len(x) > amostras:
+        idx = np.random.choice(len(x)-1, amostras, replace=False)
+        x_s, dx_s = x[idx], x[idx+1]
+    else:
+        x_s, dx_s = x[:-1], x[1:]
+
+    pontos = np.column_stack((x_s, dx_s))
+    dists = pdist(pontos)
+    epsilons = np.logspace(-2, np.log10(np.max(dists)/2), 20)
+    C = np.array([np.sum(dists < eps) / (len(pontos)*(len(pontos)-1)) for eps in epsilons])
+    
+    valid = C > 0
+    if np.sum(valid) < 5: return 0
+    log_eps = np.log10(epsilons[valid])
+    log_C = np.log10(C[valid])
+    slope, _, _, _, _ = linregress(log_eps[-10:], log_C[-10:])
+    return slope
+
+# ====================================================================
+# 3. EXECUÇÃO PRINCIPAL
+# ====================================================================
+# Parâmetros de caos fixados
+a, b, alpha, d1, d2, f, mu = 0.091, 3.33, 0.031, 0.132, 0.02, 1.25, 1.26
+periodo_forca = 2 * np.pi / mu
+
+print("Iniciando análises matemáticas pesadas... (Aguarde alguns segundos)")
+start_time = time.time()
+
+# --- Simulações Principais ---
+t_max_cont = 300 * periodo_forca
+t_eval_cont = np.linspace(0, t_max_cont, 15000)
+
+y0_1 = [0.1, 0.0, 1.5, 0.0]        # Condição do Caos
+y0_2 = [0.100001, 0.0, 1.5, 0.0]   # Condição perturbada
+
+sol1 = solve_ivp(duffing_pendulum_equations, (0, t_max_cont), y0_1, args=(a, b, alpha, d1, d2, f, mu), t_eval=t_eval_cont, method='RK45')
+sol2 = solve_ivp(duffing_pendulum_equations, (0, t_max_cont), y0_2, args=(a, b, alpha, d1, d2, f, mu), t_eval=t_eval_cont, method='RK45')
+
+x1, dx1 = sol1.y[0], sol1.y[1]
+x2 = sol2.y[0]
+
+# --- Descarte de Transiente ---
+corte = 5000
+x_fase, dx_fase = x1[corte:], dx1[corte:]
+
+# --- Secção de Poincaré Exata (Múltiplos de T) ---
+ciclos_poincare = 2000
+t_eval_poincare = np.array([i * periodo_forca for i in range(200, ciclos_poincare)])
+sol_poincare = solve_ivp(duffing_pendulum_equations, (0, t_eval_poincare[-1]), y0_1, args=(a, b, alpha, d1, d2, f, mu), t_eval=t_eval_poincare, method='RK45')
+x_poin, dx_poin = sol_poincare.y[0], sol_poincare.y[1]
+
+# --- Processamentos Paralelos ---
+N = len(x_fase)
+T_passo = t_eval_cont[1] - t_eval_cont[0]
+yf = fft(x_fase)
+xf = fftfreq(N, T_passo)[:N//2]
+amplitude_fft = 2.0/N * np.abs(yf[0:N//2])
+
+distancia = np.sqrt((x1 - x2)**2 + (sol1.y[1] - sol2.y[1])**2)
+log_distancia = np.log(distancia + 1e-12)
+
+# --- Cálculos Densos ---
+lyap_max = lyapunov_expoente(a, b, alpha, d1, d2, f, mu)
+dim_fractal = dimensao_correlacao(x_fase)
+
+print(f"Cálculos concluídos em {time.time() - start_time:.1f} segundos!")
+
+# ====================================================================
+# 4. PAINEL DE RENDERIZAÇÃO ESTILO DOSSIÊ
+# ====================================================================
+plt.style.use('dark_background')
+fig = plt.figure(figsize=(18, 11), dpi=120)
+fig.suptitle(f'Dossiê Dinâmico: Pêndulo-Duffing no Caos Severo ($f = 1.25$)', 
+             fontsize=18, fontweight='bold', y=0.96)
+
+# Painel 1: Efeito Borboleta
+ax1 = plt.subplot(2, 3, (1, 2))
+ax1.plot(sol1.t[:6000], x1[:6000], label='Trajetória Original ($x$)', color='cyan', linewidth=1.2)
+ax1.plot(sol2.t[:6000], x2[:6000], label='Perturbada ($+10^{-6}$)', color='magenta', linewidth=1.2, linestyle='--')
+ax1.set_title('Efeito Borboleta (Divergência Temporal)', fontsize=12, fontweight='bold')
+ax1.set_xlabel('Tempo ($t$)')
+ax1.set_ylabel('Posição ($x$)')
+ax1.legend(loc='upper right')
+ax1.grid(True, alpha=0.15)
+
+# Painel 2: Retrato de Fase (AGORA CAÓTICO DE FATO)
+ax2 = plt.subplot(2, 3, 3)
+ax2.plot(x_fase, dx_fase, color='yellow', linewidth=0.2, alpha=0.6)
+ax2.set_title('Retrato de Fase\n(Atrator Estranho 2D)', fontsize=12, fontweight='bold')
+ax2.set_xlabel('Posição ($x$)')
+ax2.set_ylabel('Velocidade ($\dot{x}$)')
+ax2.grid(True, alpha=0.15)
+
+# Painel 3: Secção de Poincaré Exata
+ax3 = plt.subplot(2, 3, 4)
+ax3.scatter(x_poin, dx_poin, s=1.5, color='lime', alpha=0.7, edgecolors='none')
+ax3.set_title('Secção de Poincaré\n(Fatia do Atrator em $t = n \cdot T$)', fontsize=12, fontweight='bold')
+ax3.set_xlabel('Posição ($x$)')
+ax3.set_ylabel('Velocidade ($\dot{x}$)')
+ax3.grid(True, alpha=0.15)
+
+# Painel 4: Espectro de Potência (FFT)
+ax4 = plt.subplot(2, 3, 5)
+ax4.plot(xf, amplitude_fft, color='orange', linewidth=1.2)
+ax4.set_xlim(0, 2.5)
+ax4.set_ylim(0, np.max(amplitude_fft)*1.1)
+ax4.set_title('Espectro de Potência (FFT)\n(Distribuição de Frequências)', fontsize=12, fontweight='bold')
+ax4.set_xlabel('Frequência (Hz)')
+ax4.set_ylabel('Amplitude')
+ax4.grid(True, alpha=0.15)
+
+# Painel 5: Painel Metrológico e Crescimento do Erro
+ax5 = plt.subplot(2, 3, 6)
+ax5.plot(sol1.t, log_distancia, color='white', linewidth=0.8, alpha=0.5, label='$\ln|\Delta x|$')
+m, b_lin = np.polyfit(sol1.t[100:2000], log_distancia[100:2000], 1)
+ax5.plot(sol1.t[:4000], m*sol1.t[:4000] + b_lin, color='red', linewidth=2, linestyle='--', label='Tendência Positiva')
+ax5.set_title('Crescimento do Erro & Painel Analítico', fontsize=12, fontweight='bold')
+ax5.set_xlabel('Tempo ($t$)')
+ax5.set_ylabel('$\ln|\Delta x|$')
+ax5.grid(True, alpha=0.15)
+
+info = f"""MÉTRICAS DO CAOS COMPUTADAS:
+----------------------------
+Maior Exp. de Lyapunov (λ): 
+{lyap_max:.5f}
+
+Dimensão de Correlação (D₂): 
+{dim_fractal:.3f}
+
+Classificação Algorítmica:
+>> {'CAÓTICO' if lyap_max > 0.005 else 'PERIÓDICO'} <<"""
+
+ax5.text(0.05, 0.65, info, transform=ax5.transAxes, fontsize=10, fontfamily='monospace',
+         bbox=dict(boxstyle='round,pad=0.5', facecolor='#111111', edgecolor='cyan', alpha=0.8),
+         verticalalignment='center')
+ax5.legend(loc='lower right')
+
+plt.tight_layout(pad=2.0)
+plt.subplots_adjust(top=0.88)
+plt.show()
