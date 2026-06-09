@@ -1,0 +1,76 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+import warnings
+import time
+
+warnings.filterwarnings('ignore')
+
+# Equações Diferenciais do Pêndulo-Duffing
+def duffing_pendulum_equations(t, state, a, b, alpha, d1, d2, f, mu):
+    x, dx, gamma, dgamma = state
+    denom = 1.0 - a * np.sin(gamma)**2
+    num_x = (f * np.cos(mu * t) - x - alpha * (x**3) - d1 * dx
+             - a * b * np.sin(gamma)**2
+             - a * b * d2 * dgamma * np.sin(gamma)
+             + a * b * (dgamma**2) * np.cos(gamma))
+    ddx = num_x / denom
+    ddgamma = (ddx * np.sin(gamma) / b) - np.sin(gamma) - d2 * dgamma
+    return [dx, ddx, dgamma, ddgamma]
+
+a, b, alpha, d1, d2, f, mu = 0.091, 3.33, 0.031, 0.132, 0.02, 1.25, 1.26
+
+# --- RESOLUÇÃO ---
+# 250x250 = 62.500 pontos (Quase 3x maior que o original de 150)
+resolucao = 250
+x0_vals = np.linspace(-2.0, 2.0, resolucao)
+gamma0_vals = np.linspace(-np.pi, np.pi, resolucao)
+
+matriz_fractal = np.zeros((resolucao, resolucao))
+
+t_max = 40
+t_span = (0, t_max)
+
+print(f"Iniciando simulação leve com resolução de {resolucao}x{resolucao}...")
+
+start_time = time.time()
+
+for i in range(resolucao):
+    # Feedback de progresso mais espaçado
+    if i % 25 == 0 and i > 0:
+        elapsed = time.time() - start_time
+        print(f"Progresso: {i}/{resolucao} linhas concluídas... (Tempo corrido: {elapsed:.1f}s)")
+        
+    for j in range(resolucao):
+        x0 = x0_vals[j]
+        gamma0 = gamma0_vals[i]
+
+        state_init = [x0, 0.0, gamma0, 0.0]
+
+        sol = solve_ivp(duffing_pendulum_equations, t_span, state_init,
+                        args=(a, b, alpha, d1, d2, f, mu),
+                        method='RK45', rtol=1e-3, atol=1e-3)
+
+        gamma_final = sol.y[2][-1]
+        matriz_fractal[i, j] = np.abs(gamma_final)
+
+print(f"Simulação concluída em {time.time() - start_time:.1f} segundos! Gerando o gráfico...")
+
+plt.figure(figsize=(10, 10), dpi=250)
+plt.style.use('dark_background')
+
+# interpolação 'nearest' mantém os limites do fractal mais nítidos ao dar zoom
+plt.imshow(matriz_fractal, extent=[-2.0, 2.0, -np.pi, np.pi],
+           origin='lower', cmap='twilight_shifted', aspect='auto', interpolation='nearest')
+
+plt.title('Mapa Fractal Otimizado (Média Resolução)',
+          fontsize=12, fontweight='bold', pad=15)
+plt.xlabel('Posição Inicial do Bloco ($x_0$)', fontsize=10)
+plt.ylabel('Ângulo Inicial do Pêndulo ($\gamma_0$ em radianos)', fontsize=10)
+
+plt.grid(True, linestyle=':', alpha=0.1)
+
+cbar = plt.colorbar(orientation='vertical', shrink=0.8)
+cbar.set_label('Intensidade do Ângulo Final |$\gamma_{fim}$|', fontsize=9)
+
+plt.show()
