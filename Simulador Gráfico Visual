@@ -1,0 +1,154 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from matplotlib.animation import FuncAnimation
+from IPython.display import HTML
+from matplotlib import rc
+
+
+plt.rcParams['animation.embed_limit'] = 70.0
+rc('animation', html='jshtml')
+
+# 1. Parâmetros adimensionais extraídos do artigo científico
+a = 0.091       # Razão de massas m/(M+m)
+b = 3.33        # Razão de frequências quadráticas (w2/w1)^2
+alpha = 0.031   # Coeficiente de não-linearidade cúbica da mola (Duffing)
+d1 = 0.132      # Coeficiente de amortecimento do oscilador Duffing
+d2 = 0.02       # Coeficiente de amortecimento no pivô do pêndulo
+
+# Parâmetros em zona de comportamento caótico severo (Fig. 4d do artigo)
+f = 1.25        # Amplitude da força externa
+mu = 1.26       # Frequência da força externa
+
+# 2. Definição das Equações Diferenciais
+def duffing_pendulum_equations(t, state):
+    x, dx, gamma, dgamma = state
+    denom = 1.0 - a * np.sin(gamma)**2
+    num_x = (f * np.cos(mu * t) - x - alpha * (x**3) - d1 * dx
+             - a * b * np.sin(gamma)**2
+             - a * b * d2 * dgamma * np.sin(gamma)
+             + a * b * (dgamma**2) * np.cos(gamma))
+    ddx = num_x / denom
+    ddgamma = (ddx * np.sin(gamma) / b) - np.sin(gamma) - d2 * dgamma
+    return [dx, ddx, dgamma, ddgamma]
+
+# 3. Configurações do Tempo de Simulação (Otimizado para velocidade no Colab)
+t_start, t_end = 0, 25
+fps = 25
+t_eval = np.linspace(t_start, t_end, int((t_end - t_start) * fps))
+
+# 4. Condições Iniciais: Ajustadas para o Centro da Bacia Caótica (Poincaré)
+# x_base posicionado em 3.25 e gamma_base em 6.5 radianos
+x_base = 3.25
+gamma_base = 6.5  
+delta = 0.1     # Variação milimétrica para demonstrar divergência caótica
+
+states_init = [
+    [x_base, 0.0, gamma_base, 0.0],          # Sistema 1: Base (Centro da bacia)
+    [x_base, 0.0, gamma_base + delta, 0.0],  # Sistema 2: Perturbado (+0.1)
+    [x_base, 0.0, gamma_base - delta, 0.0]   # Sistema 3: Perturbado (-0.1)
+]
+
+# Resolução numérica paralela dos 3 sistemas
+solutions = []
+for init_s in states_init:
+    sol = solve_ivp(duffing_pendulum_equations, [t_start, t_end], init_s, t_eval=t_eval, method='RK45')
+    solutions.append(sol)
+
+# 5. Configuração da Janela Gráfica (3 Subplots em Linha)
+fig, axes = plt.subplots(1, 3, figsize=(16, 6.5))
+plt.close() # Oculta a renderização estática padrão inicial do Colab
+
+# Listas para rastreamento dos elementos visuais
+blocks = []
+springs = []
+lines = []
+bobs = []
+traces = []
+
+# Listas para armazenar o histórico de coordenadas espaciais (Rastro da trajetória)
+trace_x_histories = [[] for _ in range(3)]
+trace_y_histories = [[] for _ in range(3)]
+
+colors = ['#1f77b4', '#e377c2', '#2ca02c'] # Cores customizadas dos rastros
+titles = [
+    f"Sistema 1 (Centro da Bacia)\n$\\gamma_0 = {gamma_base}$ rad",
+    f"Sistema 2 (+Variação)\n$\\gamma_0 = {gamma_base + delta}$ rad",
+    f"Sistema 3 (-Variação)\n$\\gamma_0 = {gamma_base - delta}$ rad"
+]
+
+for i, ax in enumerate(axes):
+    ax.set_xlim(-2.2, 2.2)
+    # Eixo Y deslocado para cima para enquadrar a oscilação em torno de x=3.25
+    ax.set_ylim(-1.5, 7.5) 
+    ax.set_aspect('equal')
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_title(titles[i], fontsize=11, fontweight='bold')
+    ax.set_xlabel("Eixo X (Horizontal)")
+    if i == 0: ax.set_ylabel("Eixo Y (Vertical)")
+
+    # Desenho estático do teto de suporte fixo (ajustado para a nova escala Y)
+    ax.plot([-1, 1], [6.5, 6.5], 'k-', lw=4)
+
+    # Objetos dinâmicos instanciados
+    spring, = ax.plot([], [], 'g-', lw=1.5, alpha=0.7, label='Mola')
+    springs.append(spring)
+
+    block = plt.Rectangle((-0.4, 0), 0.8, 0.3, fc='#4682B4', ec='black', zorder=3)
+    ax.add_patch(block)
+    blocks.append(block)
+
+    # Linha que desenhará a trajetória marcada do pêndulo (Rastro acumulativo)
+    trace, = ax.plot([], [], color=colors[i], lw=1.2, alpha=0.7, label='Trajetória Marcada')
+    traces.append(trace)
+
+    line, = ax.plot([], [], 'k-', lw=2, zorder=4)
+    lines.append(line)
+
+    bob, = ax.plot([], [], 'ro', ms=9, zorder=5)
+    bobs.append(bob)
+
+    ax.legend(loc='upper right', fontsize=8)
+
+# 6. Funções de Inicialização e Atualização Quadro a Quadro
+def init():
+    for i in range(3):
+        springs[i].set_data([], [])
+        lines[i].set_data([], [])
+        bobs[i].set_data([], [])
+        traces[i].set_data([], [])
+        trace_x_histories[i].clear()
+        trace_y_histories[i].clear()
+    return springs + blocks + lines + bobs + traces
+
+def update(frame):
+    for i in range(3):
+        sol = solutions[i]
+        x = sol.y[0][frame]
+        gamma = sol.y[2][frame]
+
+        # Movimentação vertical do bloco Duffing
+        block_y = x
+        blocks[i].set_xy((-0.4, block_y - 0.15))
+
+        # Extensão da linha da mola adaptada ao novo teto em Y=6.5
+        springs[i].set_data([0, 0], [6.5, block_y + 0.15])
+
+        # Cálculo das coordenadas espaciais da extremidade do pêndulo
+        pivot_x, pivot_y = 0, block_y
+        bob_x = pivot_x + np.sin(gamma)
+        bob_y = pivot_y - np.cos(gamma)
+
+        lines[i].set_data([pivot_x, bob_x], [pivot_y, bob_y])
+        bobs[i].set_data([bob_x], [bob_y])
+
+        # Alimenta o histórico para gerar a marcação de trajetória contínua
+        trace_x_histories[i].append(bob_x)
+        trace_y_histories[i].append(bob_y)
+        traces[i].set_data(trace_x_histories[i], trace_y_histories[i])
+
+    return springs + blocks + lines + bobs + traces
+
+# 7. Renderização do Painel Interativo no Google Colab
+ani = FuncAnimation(fig, update, frames=len(t_eval), init_func=init, blit=True, interval=1000/(fps/2))
+ani
